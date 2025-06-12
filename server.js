@@ -11,9 +11,13 @@ app.use(cors());
 app.use(express.json());
 
 // Initialize OpenAI (or use Claude, Gemini, etc.)
-const openai = new OpenAI({
+if (!process.env.OPENAI_API_KEY) {
+  console.error('WARNING: OPENAI_API_KEY not set! API will use fallback responses only.');
+}
+
+const openai = process.env.OPENAI_API_KEY ? new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-});
+}) : null;
 
 // Crisis intervention system prompt
 const CRISIS_SYSTEM_PROMPT = `You are a crisis intervention specialist trained specifically for homeless individuals experiencing mental health crises. You must:
@@ -87,14 +91,26 @@ app.post('/api/crisis-chat', async (req, res) => {
       { role: 'user', content: message }
     ];
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4',
-      messages,
-      temperature: 0.7,
-      max_tokens: 300,
-    });
-
-    const response = completion.choices[0].message.content;
+    let response;
+    
+    if (openai) {
+      try {
+        const completion = await openai.chat.completions.create({
+          model: 'gpt-4',
+          messages,
+          temperature: 0.7,
+          max_tokens: 300,
+        });
+        response = completion.choices[0].message.content;
+      } catch (apiError) {
+        console.error('OpenAI API error:', apiError);
+        // Fallback to contextual response
+        response = getFallbackResponse(message, context);
+      }
+    } else {
+      // No API key, use fallback
+      response = getFallbackResponse(message, context);
+    }
 
     // Analyze response for follow-up actions
     const analysis = analyzeResponse(message, response, context);
@@ -237,6 +253,40 @@ app.get('/api/survival-tips/:category', (req, res) => {
   
   res.json({ tips: tips[category] || [] });
 });
+
+// Fallback response generator
+function getFallbackResponse(message, context = {}) {
+  const msg = message.toLowerCase();
+  const { language = 'en', emotion, mood } = context;
+  
+  // Check for crisis keywords and return appropriate response
+  if (msg.includes('voices') || msg.includes('hearing')) {
+    return language === 'es' ? 
+      "Las voces pueden sentirse muy reales. Probemos un ejercicio: Nombra 5 cosas que puedes ver ahora mismo. Esto ayuda a tu mente a reconectarse con el presente." :
+      "The voices can feel very real. Let's try grounding: Name 5 things you can see right now. This helps your mind reconnect with the present moment.";
+  }
+  
+  if (msg.includes('cold') || msg.includes('freezing')) {
+    return "Getting warm is critical. Nearest 24/7 options: Penn Station waiting area, 24hr McDonald's at 34th & 8th, any emergency room. Libraries open till 8pm. Call 311 for shelter transport.";
+  }
+  
+  if (msg.includes('hungry') || msg.includes('food')) {
+    return "Free meals today: Bowery Mission (227 Bowery) serves 3x daily. Holy Apostles (296 9th Ave) lunch 10:30am-12:30pm weekdays. Most churches have meal programs - no questions asked.";
+  }
+  
+  if (msg.includes('drugs') || msg.includes('withdrawal')) {
+    return "Withdrawal is brutal but survivable. CORNER Project in Washington Heights has supplies/Narcan. For detox bed call 311. Drink water, bananas help with cramps. You're stronger than the sickness.";
+  }
+  
+  if (msg.includes('lonely') || msg.includes('alone')) {
+    return "You're not alone, even when it feels that way. The drop-in center at Grand Central has people who understand. NYC Well: 1-888-692-9355 for someone to talk to 24/7. Your life has value.";
+  }
+  
+  // Generic supportive response
+  return emotion === 'panicked' ?
+    "I hear you're really struggling right now. Let's breathe together: In for 4, hold for 4, out for 4. You're safe in this moment. What's the most urgent thing you need help with?" :
+    "I'm here with you. Whether you need resources, someone to listen, or help in crisis - you matter. What would be most helpful right now?";
+}
 
 // Analyze message for urgency and needed resources
 function analyzeResponse(message, aiResponse, context = {}) {
